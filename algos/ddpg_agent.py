@@ -120,14 +120,16 @@ class DDPGAgent(BaseAgent):
         x = torch.from_numpy(observation).float().to(self.device)
 
 
-        # Use the policy to calculate the action to execute
-        action = self.pi(x)
-
+        
         # if evaluation equals False, add normal noise to the action, where the std of the noise is expl_noise
         # Hint: Make sure the returned action's shape is correct.
-        if not evaluation:
-            expl_noise = torch.normal(0, 0.3, size=action.size()).to(self.device)
-            action += expl_noise
+        if not evaluation and self.buffer_ptr < self.random_transition: # collect random trajectories for better exploration.
+            action = torch.rand(self.action_dim)
+        else:
+            action = self.pi(x)
+            if not evaluation:
+                expl_noise = torch.normal(0, 0.3, size=action.size()).to(self.device)
+                action += expl_noise
 
         #action = torch.clip(action, -self.max_action, self.max_action)
 
