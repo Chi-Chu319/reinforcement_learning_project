@@ -11,7 +11,7 @@ from torch.distributions import Normal, Independent
 import pickle, os, random, torch
 
 from collections import defaultdict
-import pandas as pd 
+import pandas as pd
 import gymnasium as gym
 import matplotlib.pyplot as plt
 
@@ -62,8 +62,8 @@ class ReplayBuffer(object):
         self.reward = torch.zeros((max_size, 1), dtype=dtype)
         self.not_done = torch.zeros((max_size, 1), dtype=dtype)
         self.extra = {}
-    
-    def _to_tensor(self, data, dtype=torch.float32):   
+
+    def _to_tensor(self, data, dtype=torch.float32):
         if isinstance(data, torch.Tensor):
             return data.to(dtype=dtype)
         return torch.tensor(data, dtype=dtype)
@@ -94,14 +94,14 @@ class ReplayBuffer(object):
 
         batch = Batch(
             state = self.state[ind].to(device),
-            action = self.action[ind].to(device), 
-            next_state = self.next_state[ind].to(device), 
-            reward = self.reward[ind].to(device), 
-            not_done = self.not_done[ind].to(device), 
+            action = self.action[ind].to(device),
+            next_state = self.next_state[ind].to(device),
+            reward = self.reward[ind].to(device),
+            not_done = self.not_done[ind].to(device),
             extra = extra
         )
         return batch
-    
+
     def get_all(self, device='cpu'):
         if self.extra:
             extra = {key: value[:self.size].to(device) for key, value in self.extra.items()}
@@ -110,10 +110,10 @@ class ReplayBuffer(object):
 
         batch = Batch(
             state = self.state[:self.size].to(device),
-            action = self.action[:self.size].to(device), 
-            next_state = self.next_state[:self.size].to(device), 
-            reward = self.reward[:self.size].to(device), 
-            not_done = self.not_done[:self.size].to(device), 
+            action = self.action[:self.size].to(device),
+            next_state = self.next_state[:self.size].to(device),
+            reward = self.reward[:self.size].to(device),
+            not_done = self.not_done[:self.size].to(device),
             extra = extra
         )
         return batch
