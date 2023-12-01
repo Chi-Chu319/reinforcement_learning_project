@@ -24,6 +24,7 @@ def soft_update_params(m, m_target, tau):
             p_target.data.lerp_(p.data, tau)
 
 # Actor-critic agent
+# TODO same weight
 class Policy(nn.Module):
     def __init__(self, state_dim, action_dim, max_action):
         super().__init__()
@@ -49,6 +50,19 @@ class Critic(nn.Module):
         x = torch.cat([state, action], 1)
         return self.value(x) # output shape [batch, 1]
 
+class DistributionalCritic(nn.Module):
+    def __init__(self, state_dim, action_dim, num_atoms, v_min, v_max):
+        super().__init__()
+        self.value = nn.Sequential(
+            nn.Linear(state_dim+action_dim, 32), nn.ReLU(),
+            nn.Linear(32, 32), nn.ReLU(),
+            nn.Linear(32, num_atoms))
+
+    def forward(self, state, action):
+        x = torch.cat([state, action], 1)
+        return self.value(x) # output shape [batch, num_atoms]
+
+# TODO prioritized ReplayBuffer
 class ReplayBuffer(object):
     def __init__(self, state_shape:tuple, action_dim: int, max_size=int(1e6)):
         self.max_size = max_size
