@@ -8,7 +8,7 @@ import copy, time
 import utils.common_utils as cu
 
 class DistributionalCritic(nn.Module):
-    def __init__(self, state_dim, action_dim, num_atoms=51, v_min=-10, v_max=10):
+    def __init__(self, state_dim, action_dim, supports, num_atoms=51, v_min=-10, v_max=10):
         super(DistributionalCritic, self).__init__()
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.state_dim = state_dim
@@ -17,23 +17,24 @@ class DistributionalCritic(nn.Module):
         self.v_min = v_min
         self.v_max = v_max
 
-        self.fc1 = nn.Linear(state_dim + action_dim, 32)
-        self.fc2 = nn.Linear(32, 32)
-        self.fc3 = nn.Linear(32, num_atoms)
+        self.value = nn.Sequential(
+            nn.Linear(state_dim+action_dim, 32), nn.ReLU(),
+            nn.Linear(32, 32), nn.ReLU(),
+            nn.Linear(32, num_atoms))
+        self.supports = supports
 
-        delta = (v_max - v_min) / (num_atoms - 1)
-        self.supports = torch.arange(v_min, v_max + delta, delta).to(self.device)
 
     def forward(self, state, action):
-        x = torch.cat([state, action], dim=1)
-        x = F.relu(self.fc1(x))
-        x = F.relu(self.fc2(x))
-        x = self.fc3(x)
-        return x
+        x = torch.cat([state, action], 1)
+        return self.value(x) # output shape [batch, num_atoms]
+
+    def get_probs(self, state, action):
+        return torch.softmax(self.forward(state, action), dim=1)
 
     def distr_to_q(self, distr):
         weights = F.softmax(distr, dim=1) * self.supports
         res = weights.sum(dim=1)
+
         return res.unsqueeze(dim=-1)
 
 class DDPGExtension(DDPGAgent):
@@ -45,10 +46,18 @@ class DDPGExtension(DDPGAgent):
         self.v_max = self.cfg.env_config["n_sanding"]
         self.num_atoms = self.cfg.num_atoms
         self.delta_z = (self.v_max - self.v_min) / (self.num_atoms - 1)
+        self.supports = torch.arange(self.v_min, self.v_max + self.delta_z, self.delta_z).to(self.device)
+
         # Override the Critic and Policy networks
-        self.q = DistributionalCritic(self.observation_space_dim, self.action_space_dim,
-                                      num_atoms=self.num_atoms,
-                                      v_min=self.v_min, v_max=self.v_max).to(self.device)
+        self.q = DistributionalCritic(
+            self.observation_space_dim,
+            self.action_space_dim,
+            supports = self.supports,
+            num_atoms=self.num_atoms,
+            v_min=self.v_min,
+            v_max=self.v_max
+        ).to(self.device)
+
         self.q_target = copy.deepcopy(self.q)
 
         self.pi = Policy(self.observation_space_dim, self.action_space_dim, self.max_action).to(self.device)
@@ -59,51 +68,33 @@ class DDPGExtension(DDPGAgent):
 
         self.critic_loss = nn.BCELoss(reduction='none')
 
-        self.buffer = ReplayBuffer(state_shape=(self.observation_space_dim,),
-                                  action_dim=self.action_dim, max_size=int(float(self.buffer_size)))
+        self.buffer = ReplayBuffer(
+            state_shape=(self.observation_space_dim,),
+            action_dim=self.action_dim,
+            max_size=int(float(self.buffer_size))
+        )
 
-    def _l2_project(self, next_distr, rewards, dones_mask_t, gamma, delta_z, n_atoms, v_min, v_max):
-        dones_mask = dones_mask_t.bool().flatten()
-        batch_size = len(rewards)
-        proj_distr = torch.zeros((batch_size, n_atoms), dtype=torch.float32, device=self.device)
+    def _get_critic_loss(self, state, action, next_state, reward, not_done, current_Q_dist, next_Q_dist):
+        target_z = reward + not_done * self.gamma * self.supports
+        target_z = target_z.clamp(min=self.v_min, max=self.v_max)
 
-        for atom in range(n_atoms):
-            tz_j = torch.clamp(rewards + (v_min + atom * delta_z) * gamma, min=v_min, max=v_max)
-            b_j = (tz_j - v_min) / delta_z
-            l = torch.floor(b_j).to(torch.int64)
-            u = torch.ceil(b_j).to(torch.int64)
-            eq_mask = u == l
-            eq_mask = eq_mask.flatten()
-            proj_distr[eq_mask, l[eq_mask]] += next_distr[eq_mask, atom]
-            ne_mask = u != l
-            ne_mask = ne_mask.flatten()
+        b = (target_z - self.v_min) / self.delta_z
+        l = b.floor().long()
+        u = b.ceil().long()
 
-            proj_distr[ne_mask, l[ne_mask]] += next_distr[ne_mask, atom] * (u - b_j)[ne_mask]
-            proj_distr[ne_mask, u[ne_mask]] += next_distr[ne_mask, atom] * (b_j - l)[ne_mask]
+        l[(u > 0) * (l == u)] -= 1
+        u[(l < (self.num_atoms - 1)) * (l == u)] += 1
 
-        if dones_mask.any():
-            proj_distr[dones_mask] = 0.0
-            tz_j = torch.clamp(rewards[dones_mask], min=v_min, max=v_max)
+        proj_dist = torch.zeros_like(next_Q_dist)
+        offset = torch.linspace(0, (self.batch_size - 1) * self.num_atoms, self.batch_size).unsqueeze(1).expand(self.batch_size, self.num_atoms).long().to(self.device)
+        proj_dist.view(-1).index_add_(0, (l + offset).view(-1), (next_Q_dist * (u.float() - b)).view(-1))
+        proj_dist.view(-1).index_add_(0, (u + offset).view(-1), (next_Q_dist * (b - l.float())).view(-1))
 
-            b_j = (tz_j - v_min) / delta_z
-            l = torch.floor(b_j).to(torch.int64)
-            u = torch.ceil(b_j).to(torch.int64)
-            eq_mask = u == l
-            eq_mask = eq_mask.flatten()
-            eq_dones = dones_mask.clone()
-            eq_dones[dones_mask] = eq_mask
-            if eq_dones.any():
-                proj_distr[eq_dones, l[eq_mask]] = 1.0
-            ne_mask = u != l
-            ne_mask = ne_mask.flatten()
+        log_p = torch.log(current_Q_dist)
 
-            ne_dones = dones_mask.clone()
-            ne_dones[dones_mask] = ne_mask
-            if ne_dones.any():
-                proj_distr[ne_dones, l[ne_mask]] = (u - b_j)[ne_mask]
-                proj_distr[ne_dones, u[ne_mask]] = (b_j - l)[ne_mask]
+        loss = -(log_p * proj_dist).sum(-1).mean()
 
-        return proj_distr
+        return loss
 
     def _update(self):
         batch = self.buffer.sample(self.batch_size, device=self.device)
@@ -116,23 +107,11 @@ class DDPGExtension(DDPGAgent):
 
         # critic loss
         with torch.no_grad():
-            target_Q = self.q_target(next_state, self.pi_target(next_state))
+            next_Q_dist = self.q_target.get_probs(next_state, self.pi_target(next_state))
 
-            target_Q = reward + self.gamma * not_done * self.q_target.distr_to_q(target_Q)
-            # target_z_projected = self._l2_project(next_distr_v=target_Q_dist,
-            #                                     rewards_v=reward,
-            #                                     dones_mask_t=not_done,
-            #                                     gamma=self.gamma,
-            #                                     delta_z=self.delta_z,
-            #                                     n_atoms=self.num_atoms,
-            #                                     v_min=self.v_min,
-            #                                     v_max=self.v_max)
+        current_Q_dist = self.q.get_probs(state, action)
 
-        current_Q = self.q(state, action)
-
-        # prob_dist_v = -F.log_softmax(current_Q, dim=1) * target_z_projected.detach()
-        # critic_loss = prob_dist_v.sum(dim=1).mean()
-        critic_loss = F.mse_loss(self.q.distr_to_q(current_Q), target_Q)
+        critic_loss = self._get_critic_loss(state, action, next_state, reward, not_done, current_Q_dist, next_Q_dist)
 
         self.q_optim.zero_grad()
         critic_loss.backward()
