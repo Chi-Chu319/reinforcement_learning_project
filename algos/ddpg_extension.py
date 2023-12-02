@@ -3,39 +3,9 @@ from torch import nn
 import torch.nn.functional as F
 import numpy as np
 from algos.ddpg_agent import DDPGAgent
-from algos.ddpg_utils import Policy, ReplayBuffer
+from algos.ddpg_utils import Policy, ReplayBuffer, PrioritizedReplayBuffer, DistributionalCritic
 import copy, time
 import utils.common_utils as cu
-
-class DistributionalCritic(nn.Module):
-    def __init__(self, state_dim, action_dim, supports, num_atoms=51, v_min=-10, v_max=10):
-        super(DistributionalCritic, self).__init__()
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.state_dim = state_dim
-        self.action_dim = action_dim
-        self.num_atoms = num_atoms
-        self.v_min = v_min
-        self.v_max = v_max
-
-        self.value = nn.Sequential(
-            nn.Linear(state_dim+action_dim, 32), nn.ReLU(),
-            nn.Linear(32, 32), nn.ReLU(),
-            nn.Linear(32, num_atoms))
-        self.supports = supports
-
-
-    def forward(self, state, action):
-        x = torch.cat([state, action], 1)
-        return self.value(x) # output shape [batch, num_atoms]
-
-    def get_probs(self, state, action):
-        return torch.softmax(self.forward(state, action), dim=1)
-
-    def distr_to_q(self, distr):
-        weights = F.softmax(distr, dim=1) * self.supports
-        res = weights.sum(dim=1)
-
-        return res.unsqueeze(dim=-1)
 
 class DDPGExtension(DDPGAgent):
     def __init__(self, config=None):
@@ -68,13 +38,13 @@ class DDPGExtension(DDPGAgent):
 
         self.critic_loss = nn.BCELoss(reduction='none')
 
-        self.buffer = ReplayBuffer(
+        self.buffer = PrioritizedReplayBuffer(
             state_shape=(self.observation_space_dim,),
             action_dim=self.action_dim,
             max_size=int(float(self.buffer_size))
         )
 
-    def _get_critic_loss(self, state, action, next_state, reward, not_done, current_Q_dist, next_Q_dist):
+    def _get_critic_loss(self, state, action, next_state, reward, not_done, weights, current_Q_dist, next_Q_dist):
         target_z = reward + not_done * self.gamma * self.supports
         target_z = target_z.clamp(min=self.v_min, max=self.v_max)
 
@@ -92,12 +62,12 @@ class DDPGExtension(DDPGAgent):
 
         log_p = torch.log(current_Q_dist)
 
-        loss = -(log_p * proj_dist).sum(-1).mean()
+        loss = -((log_p * proj_dist) * weights.unsqueeze(1).detach()).sum(-1).mean()
 
         return loss
 
     def _update(self):
-        batch = self.buffer.sample(self.batch_size, device=self.device)
+        indices, batch, weights = self.buffer.sample(self.batch_size, device=self.device)
 
         state = batch.state
         action = batch.action
@@ -111,7 +81,7 @@ class DDPGExtension(DDPGAgent):
 
         current_Q_dist = self.q.get_probs(state, action)
 
-        critic_loss = self._get_critic_loss(state, action, next_state, reward, not_done, current_Q_dist, next_Q_dist)
+        critic_loss = self._get_critic_loss(state, action, next_state, reward, not_done, weights, current_Q_dist, next_Q_dist)
 
         self.q_optim.zero_grad()
         critic_loss.backward()
@@ -126,6 +96,19 @@ class DDPGExtension(DDPGAgent):
         self.pi_optim.zero_grad()
         actor_loss.backward()
         self.pi_optim.step()
+
+        # Update priorities for sampled batch
+        # https://danieltakeshi.github.io/2019/07/14/per/
+        '''
+        we use |δi| as the magnitude of the TD error.
+        Negative versus positive TD errors are combined into one case here,
+        but in principle we could consider them as separate cases and add a bonus to whichever one we feel is more important to address.
+        '''
+        with torch.no_grad():
+            target_Q = reward + self.gamma * not_done * self.q_target.distr_to_q(next_Q_dist)
+            deltas = (target_Q - self.q.distr_to_q(current_Q_dist)).squeeze().abs()
+
+            self.buffer.update_priorities(indices, deltas + 1e-6)
 
         cu.soft_update_params(self.q, self.q_target, self.tau)
         cu.soft_update_params(self.pi, self.pi_target, self.tau)
