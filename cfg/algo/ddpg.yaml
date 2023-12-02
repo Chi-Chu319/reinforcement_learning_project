@@ -6,3 +6,7 @@ lr: 3e-4
 tau: 0.005
 batch_size: 256
 buffer_size: 1e6
+
+num_actors: 4
+trajectory_length: 4
+num_atoms: 50
