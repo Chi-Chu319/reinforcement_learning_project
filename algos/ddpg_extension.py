@@ -36,8 +36,6 @@ class DDPGExtension(DDPGAgent):
         self.pi_optim = torch.optim.Adam(self.pi.parameters(), lr=float(self.lr))
         self.q_optim = torch.optim.Adam(self.q.parameters(), lr=float(self.lr))
 
-        self.critic_loss = nn.BCELoss(reduction='none')
-
         self.buffer = PrioritizedReplayBuffer(
             state_shape=(self.observation_space_dim,),
             action_dim=self.action_dim,
