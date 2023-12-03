@@ -99,7 +99,7 @@ class Critic(nn.Module):
 
 class ReplayBuffer(object):
     def __init__(self, state_shape:tuple, action_dim: int, max_size=int(1e6)):
-            """
+        """
         Replay buffer to store and sample experiences for training the agent. Supports additional information in the form of extra dictionaries.
 
         Parameters:
