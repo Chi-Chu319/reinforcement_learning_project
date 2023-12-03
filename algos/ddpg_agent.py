@@ -13,7 +13,7 @@ def to_numpy(tensor):
 class DDPGAgent(BaseAgent):
     def __init__(self, config=None):
         super(DDPGAgent, self).__init__(config)
-        self.device = self.cfg.device  # ""cuda" if torch.cuda.is_available() else "cpu"
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.name = 'ddpg'
         state_dim = self.observation_space_dim
         self.action_dim = self.action_space_dim
@@ -59,22 +59,12 @@ class DDPGAgent(BaseAgent):
     def _update(self,):
         # get batch data
         batch = self.buffer.sample(self.batch_size, device=self.device)
-        # batch contains:
-        #    state = batch.state, shape [batch, state_dim]
-        #    action = batch.action, shape [batch, action_dim]
-        #    next_state = batch.next_state, shape [batch, state_dim]
-        #    reward = batch.reward, shape [batch, 1]
-        #    not_done = batch.not_done, shape [batch, 1]
         state = batch.state
         action = batch.action
         next_state = batch.next_state
         reward = batch.reward
         not_done = batch.not_done
         
-        # Hints: 1. compute the Q target with the q_target and pi_target networks
-        #        2. compute the critic loss and update the q's parameters
-        #        3. compute actor loss and update the pi's parameters
-        #        4. update the target q and pi using u.soft_update_params() (See the DQN code)
         # compute current q
         current_Q = self.q(state, action)
         

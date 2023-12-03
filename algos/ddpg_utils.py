@@ -19,6 +19,17 @@ Batch = namedtuple('Batch', ['state', 'action', 'next_state', 'reward', 'not_don
 
 class DistributionalCritic(nn.Module):
     def __init__(self, state_dim, action_dim, supports, num_atoms=51, v_min=-10, v_max=10):
+        """
+        Distributional critic for estimating the distribution of Q-values for state-action pairs.
+
+        Parameters:
+        - `state_dim`: Dimensionality of the state space.
+        - `action_dim`: Dimensionality of the action space.
+        - `supports`: The supports for the distribution.
+        - `num_atoms`: The number of atoms in the distribution.
+        - `v_min`: Minimum value for the distributional critic.
+        - `v_max`: Maximum value for the distributional critic.
+        """
         super(DistributionalCritic, self).__init__()
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.state_dim = state_dim
@@ -46,9 +57,16 @@ class DistributionalCritic(nn.Module):
         return res.unsqueeze(dim=-1)
 
 
-# Actor-critic agent
 class Policy(nn.Module):
     def __init__(self, state_dim, action_dim, max_action):
+        """
+        Actor network for the actor-critic agent. Responsible for producing actions based on observed states.
+
+        Parameters:
+        - `state_dim`: Dimensionality of the state space.
+        - `action_dim`: Dimensionality of the action space.
+        - `max_action`: Maximum absolute value for each action component.
+        """
         super().__init__()
         self.max_action = max_action
         self.actor = nn.Sequential(
@@ -62,6 +80,13 @@ class Policy(nn.Module):
 
 class Critic(nn.Module):
     def __init__(self, state_dim, action_dim):
+        """
+        Critic network for the actor-critic agent. Estimates the value function for state-action pairs.
+
+        Parameters:
+        - `state_dim`: Dimensionality of the state space.
+        - `action_dim`: Dimensionality of the action space.
+        """
         super().__init__()
         self.value = nn.Sequential(
             nn.Linear(state_dim+action_dim, 32), nn.ReLU(),
@@ -74,6 +99,14 @@ class Critic(nn.Module):
 
 class ReplayBuffer(object):
     def __init__(self, state_shape:tuple, action_dim: int, max_size=int(1e6)):
+            """
+        Replay buffer to store and sample experiences for training the agent. Supports additional information in the form of extra dictionaries.
+
+        Parameters:
+        - `state_shape`: Tuple representing the shape of the state space.
+        - `action_dim`: Dimensionality of the action space.
+        - `max_size`: Maximum size of the replay buffer (default: 1e6).
+        """
         self.max_size = max_size
         self.ptr = 0
         self.size = 0
@@ -144,17 +177,21 @@ class ReplayBuffer(object):
     
 class PrioritizedReplayBuffer(ReplayBuffer):
     def __init__(self, state_shape: tuple, action_dim: int, max_size=int(1e6), alpha=0.6, beta=0.4):
-        super(PrioritizedReplayBuffer, self).__init__(state_shape, action_dim, max_size)  # Call the base class constructor
+        super(PrioritizedReplayBuffer, self).__init__(state_shape, action_dim, max_size) 
+        """
+        Prioritized replay buffer that assigns priorities to experiences based on their temporal difference errors. Inherits from `ReplayBuffer`.
 
+        Parameters:
+        - `state_shape`: Tuple representing the shape of the state space.
+        - `action_dim`: Dimensionality of the action space.
+        - `max_size`: Maximum size of the replay buffer.
+        - `alpha`: Priority exponent controlling the amount of prioritization.
+        - `beta`: Importance sampling exponent for adjusting the bias of the updates.
+        """
         self.priorities = np.empty(max_size, dtype=np.float32)
 
         self.alpha = alpha
         self.beta = beta
-
-    def _to_tensor(self, data, dtype=torch.float32):
-        if isinstance(data, torch.Tensor):
-            return data.to(dtype=dtype)
-        return torch.tensor(data, dtype=dtype)
 
     def add(self, state, action, next_state, reward, done):
         priority = 1.0 if self.size == 0 else np.max(self.priorities[:self.size])
@@ -208,19 +245,3 @@ class PrioritizedReplayBuffer(ReplayBuffer):
             extra = extra
         )
         return batch, indices, torch.from_numpy(weights).to(device)
-        
-    def get_all(self, device='cpu'):
-        if self.extra:
-            extra = {key: value[:self.size].to(device) for key, value in self.extra.items()}
-        else:
-            extra = {}
-
-        batch = Batch(
-            state = self.state[:self.size].to(device),
-            action = self.action[:self.size].to(device), 
-            next_state = self.next_state[:self.size].to(device), 
-            reward = self.reward[:self.size].to(device), 
-            not_done = self.not_done[:self.size].to(device), 
-            extra = extra
-        )
-        return batch
