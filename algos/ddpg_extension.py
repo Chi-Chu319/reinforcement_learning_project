@@ -41,7 +41,7 @@ class DDPGExtension(DDPGAgent):
 
         self.v_min = -self.cfg.env_config["n_no_sanding"]
         self.v_max = self.cfg.env_config["n_sanding"]
-        self.num_atoms = self.cfg.num_atoms
+        self.num_atoms = 51
         self.delta_z = (self.v_max - self.v_min) / (self.num_atoms - 1)
         self.supports = torch.arange(self.v_min, self.v_max + self.delta_z, self.delta_z).to(self.device)
 
